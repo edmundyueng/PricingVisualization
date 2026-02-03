@@ -1,0 +1,1 @@
+For offline use, place local copies of libraries here. By default, CDN links are used in index.html to keep the zip light.
