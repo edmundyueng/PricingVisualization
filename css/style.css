@@ -1,58 +1,91 @@
+/* --- 基础样式 --- */
+body { 
+    font-family: 'Inter', sans-serif; 
+    -webkit-font-smoothing: antialiased;
+}
 
-        body { font-family: 'Inter', sans-serif; }
-        .custom-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
-        .custom-scrollbar::-webkit-scrollbar-track { background: #f1f5f9; }
-        .custom-scrollbar::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
-        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
-        
-        /* Floating Deploy Button */
-        .deploy-float-btn {
-            position: fixed;
-            top: 20px;
-            right: 20px;
-            z-index: 1000;
-            background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
-            color: white;
-            padding: 10px 20px;
-            border-radius: 9999px;
-            box-shadow: 0 4px 15px rgba(37, 99, 235, 0.4);
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            font-weight: 600;
-            font-size: 14px;
-            cursor: pointer;
-            transition: all 0.3s ease;
-            border: 1px solid rgba(255,255,255,0.2);
-            text-decoration: none;
-        }
-        .deploy-float-btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 8px 25px rgba(37, 99, 235, 0.5);
-            background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
-        }
-        .deploy-float-btn:active { transform: translateY(0); }
-        
-        /* Language Toggle */
-        .lang-btn {
-            font-size: 0.875rem;
-            font-weight: 500;
-            color: #64748b;
-            padding: 6px 12px;
-            border-radius: 6px;
-            transition: all 0.2s;
-            background-color: #f1f5f9;
-        }
-        .lang-btn:hover { color: #0f172a; background-color: #e2e8f0; }
+/* --- 自定义滚动条 (优化侧边栏体验) --- */
+.custom-scrollbar::-webkit-scrollbar { 
+    width: 5px; 
+    height: 5px; 
+}
+.custom-scrollbar::-webkit-scrollbar-track { 
+    background: transparent; 
+}
+.custom-scrollbar::-webkit-scrollbar-thumb { 
+    background: #cbd5e1; 
+    border-radius: 10px; 
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover { 
+    background: #94a3b8; 
+}
 
-        @media (max-width: 640px) {
-            .deploy-float-btn {
-                padding: 8px 14px;
-                font-size: 12px;
-                top: auto;
-                bottom: 20px;
-                right: 20px;
-            }
-            header { padding-right: 0 !important; }
-        }
-    
+/* --- 悬浮部署按钮 (右下角) --- */
+.deploy-float-btn {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    width: 56px;
+    height: 56px;
+    border-radius: 28px;
+    background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+    color: white;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 4px 15px rgba(37, 99, 235, 0.4);
+    cursor: pointer;
+    z-index: 50;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    border: none;
+}
+.deploy-float-btn:hover {
+    transform: scale(1.1) rotate(5deg);
+    box-shadow: 0 8px 25px rgba(37, 99, 235, 0.5);
+}
+.deploy-float-btn:active {
+    transform: scale(0.95);
+}
+.deploy-float-btn:disabled {
+    background: #94a3b8;
+    box-shadow: none;
+    cursor: not-allowed;
+}
+
+/* --- Tab 切换动画效果 --- */
+#tabCurve, #tabDist {
+    transition: all 0.2s ease-in-out;
+}
+
+/* --- 加载动画 (用于部署打包过程) --- */
+.loader {
+    border: 2px solid rgba(255, 255, 255, 0.3);
+    border-top: 2px solid #ffffff;
+    border-radius: 50%;
+    width: 16px;
+    height: 16px;
+    animation: spin 1s linear infinite;
+}
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+/* --- 响应式调整 --- */
+@media (max-width: 1024px) {
+    aside {
+        max-height: 40vh;
+    }
+}
+
+@media (max-width: 640px) {
+    .deploy-float-btn {
+        width: 48px;
+        height: 48px;
+        bottom: 16px;
+        right: 16px;
+    }
+    header {
+        padding: 1rem;
+    }
+}
