@@ -16,6 +16,8 @@ const TRANSLATIONS = {
         addAnchor: "添加",
         landSize: "土地面积",
         priceRate: "价格率",
+        step3: "3. 图表设置",
+        binSizeLabel: "面积区间大小 (Bin Size)",
         generateCurve: "生成 PCHIP 插值曲线",
         chartSectionTitle: "可视化分析",
         legendCurve: "曲线",
@@ -28,11 +30,14 @@ const TRANSLATIONS = {
         downloadLookup: "下载逐点表 (CSV)",
         tabCurve: "价格率曲线 (Rate)",
         tabDist: "总价与库存分布 (Distribution)",
-        distChartTitle: "土地面积分布与总价估算",
+        distChartTitle: "面积区间分布与总价估算",
+        xAxisBin: "土地面积区间 (Size Bin)",
         yAxisCount: "地块数量 (Lots)",
-        yAxisTotalPrice: "总价 ($)",
+        yAxisAvgPrice: "平均总价 ($)",
         seriesLotCount: "地块数量",
-        seriesTotalPrice: "估算总价",
+        seriesAvgPrice: "平均总价",
+        minPrice: "最低价",
+        maxPrice: "最高价",
         alertNoData: "请先上传土地数据。",
         alertAnchors: "请至少提供2个有效的锚定点。",
         chartTitle: "土地价格率曲线 (PCHIP)",
@@ -61,6 +66,8 @@ const TRANSLATIONS = {
         addAnchor: "Add",
         landSize: "Land Size",
         priceRate: "Price Rate",
+        step3: "3. Chart Settings",
+        binSizeLabel: "Bin Size (Land Size)",
         generateCurve: "Generate PCHIP Curve",
         chartSectionTitle: "Visualization",
         legendCurve: "Curve",
@@ -73,11 +80,14 @@ const TRANSLATIONS = {
         downloadLookup: "Lookup (CSV)",
         tabCurve: "Price Rate Curve",
         tabDist: "Price & Distribution",
-        distChartTitle: "Land Size Distribution & Total Price",
+        distChartTitle: "Land Size Bins & Estimated Price",
+        xAxisBin: "Land Size Bin",
         yAxisCount: "Number of Lots",
-        yAxisTotalPrice: "Total Price ($)",
+        yAxisAvgPrice: "Average Price ($)",
         seriesLotCount: "Lot Count",
-        seriesTotalPrice: "Estimated Price",
+        seriesAvgPrice: "Average Price",
+        minPrice: "Min Price",
+        maxPrice: "Max Price",
         alertNoData: "Please upload land data first.",
         alertAnchors: "At least 2 anchor points required.",
         chartTitle: "Land Price Rate Curve (PCHIP)",
@@ -140,6 +150,7 @@ const State = {
     anchors: [{ size: 375, rate: 690 }, { size: 450, rate: 645 }, { size: 550, rate: 625 }, { size: 600, rate: 620 }],
     lastPchipParams: null,
     results: [],
+    binSize: 50, // 默认 Bin Size
     isChartGenerated: false
 };
 
@@ -159,6 +170,7 @@ const els = {
     previewData: document.getElementById('previewData'),
     anchorsContainer: document.getElementById('anchorsContainer'),
     addAnchorBtn: document.getElementById('addAnchorBtn'),
+    binSizeInput: document.getElementById('binSizeInput'),
     generateBtn: document.getElementById('generateBtn'),
     chartDiv: document.getElementById('chartDiv'),
     distChartDiv: document.getElementById('distChartDiv'),
@@ -185,6 +197,18 @@ function updateUI() {
 }
 
 els.langToggle.onclick = () => { State.lang = State.lang === 'zh' ? 'en' : 'zh'; updateUI(); };
+
+// 监听 Bin Size 实时修改
+els.binSizeInput.addEventListener('input', (e) => {
+    const val = parseInt(e.target.value);
+    if (val > 0) {
+        State.binSize = val;
+        // 如果图表已经生成过了，输入时实时重新渲染
+        if (State.isChartGenerated) {
+            generateChart();
+        }
+    }
+});
 
 function renderAnchors() {
     els.anchorsContainer.innerHTML = '';
@@ -272,6 +296,8 @@ els.generateBtn.onclick = () => {
 function generateChart() {
     if (!State.isChartGenerated) return;
     const minX = Math.min(...State.uploadedData), maxX = Math.max(...State.uploadedData);
+    
+    // 1. 生成第一张图：PCHIP 价格率曲线
     const plotX = []; for(let i=0; i<=200; i++) plotX.push(minX + (maxX-minX)*(i/200));
     const plotY = PCHIP.evaluate(State.lastPchipParams, plotX);
 
@@ -279,23 +305,104 @@ function generateChart() {
         { x: plotX, y: plotY, mode: 'lines', name: t('seriesCurve'), line: { color: '#2563eb', width: 3 } },
         { x: State.anchors.map(a=>a.size), y: State.anchors.map(a=>a.rate), mode: 'markers', name: t('seriesAnchors'), marker: { color: '#ef4444', size: 10 } },
         { x: [minX, maxX], y: [State.avgRate, State.avgRate], mode: 'lines', name: t('seriesAvg'), line: { dash: 'dash', color: '#10b981' } }
-    ], { title: t('chartTitle'), margin: { t: 40, b: 40, l: 50, r: 20 }, hovermode: 'closest' }, { responsive: true });
+    ], { title: t('chartTitle'), margin: { t: 40, b: 40, l: 50, r: 20 }, hovermode: 'closest' }, { responsive: true, displayModeBar: false });
 
-    const sizeCounts = {}; const sizePrices = {};
+    // 2. 生成第二张图：Bin 分布与上下双半轴图 (Diverging Bar Chart)
+    const sizes = State.results.map(r => r.x);
+    
+    // 使用用户在 UI 上的 Bin Size
+    let step = State.binSize;
+    if (!step || step <= 0) step = 50;
+
+    const minBin = Math.floor(minX / step) * step;
+    const maxBin = Math.ceil(maxX / step) * step;
+
+    const bins = [];
+    for (let b = minBin; b < maxBin; b += step) {
+        bins.push({ label: `${b}-${b+step}`, count: 0, prices: [] });
+    }
+
     State.results.forEach(item => {
-        const s = item.x; sizeCounts[s] = (sizeCounts[s] || 0) + 1; sizePrices[s] = s * item.y;
+        const price = item.x * item.y; // 土地面积 × 价格率 = 估算总价
+        let bIdx = Math.floor((item.x - minBin) / step);
+        if (bIdx >= bins.length) bIdx = bins.length - 1;
+        if (bIdx < 0) bIdx = 0;
+        bins[bIdx].count++;
+        bins[bIdx].prices.push(price);
     });
-    const uniqueX = Object.keys(sizeCounts).map(Number).sort((a,b)=>a-b);
-    Plotly.newPlot(els.distChartDiv, [
-        { x: uniqueX, y: uniqueX.map(x=>sizeCounts[x]), type: 'bar', name: t('seriesLotCount'), marker: { color: '#94a3b8' }, yaxis: 'y' },
-        { x: uniqueX, y: uniqueX.map(x=>sizePrices[x]), type: 'scatter', mode: 'lines+markers', name: t('seriesTotalPrice'), line: { color: '#f59e0b' }, yaxis: 'y2' }
-    ], { 
-        title: t('distChartTitle'), hovermode: 'x unified', showlegend: true, legend: { orientation: 'h', y: 1.1 },
-        yaxis: { title: t('yAxisCount') }, yaxis2: { title: t('yAxisTotalPrice'), overlaying: 'y', side: 'right', showgrid: false }
-    }, { responsive: true });
+
+    const xLabels = [], counts = [], avgPrices = [], customDataPrice = [];
+
+    bins.forEach(b => {
+        xLabels.push(b.label);
+        counts.push(b.count);
+        if (b.count > 0) {
+            avgPrices.push(b.prices.reduce((a,c)=>a+c, 0) / b.count);
+            customDataPrice.push([Math.min(...b.prices), Math.max(...b.prices)]); // 注入 Min & Max 数据
+        } else {
+            avgPrices.push(0);
+            customDataPrice.push([0, 0]);
+        }
+    });
+
+    // 顶部正数区：平均总价 (Bar Chart)
+    const tracePrice = {
+        x: xLabels,
+        y: avgPrices,
+        type: 'bar',
+        name: t('seriesAvgPrice'),
+        marker: { color: '#3b82f6', opacity: 0.9 }, // 蓝色系
+        customdata: customDataPrice,
+        hovertemplate: '<b>Bin: %{x}</b><br>' + 
+                       t('seriesAvgPrice') + ': $%{y:,.0f}<br>' + 
+                       t('minPrice') + ': $%{customdata[0]:,.0f}<br>' + 
+                       t('maxPrice') + ': $%{customdata[1]:,.0f}<extra></extra>',
+        yaxis: 'y'
+    };
+
+    // 底部负数区：地块数量 (Bar Chart 向下悬挂)
+    const traceCount = {
+        x: xLabels,
+        y: counts,
+        type: 'bar',
+        name: t('seriesLotCount'),
+        marker: { color: '#f59e0b', opacity: 0.9 }, // 橙色系
+        yaxis: 'y2',
+        hovertemplate: '<b>Bin: %{x}</b><br>' + 
+                       t('seriesLotCount') + ': %{y}<extra></extra>'
+    };
+
+    const distLayout = {
+        title: t('distChartTitle'),
+        margin: { t: 40, r: 40, l: 60, b: 60 },
+        barmode: 'group',
+        xaxis: {
+            title: t('xAxisBin'),
+            anchor: 'y2', // 将 X轴文字标签固定在最底部
+            tickangle: -45,
+            gridcolor: '#f1f5f9'
+        },
+        yaxis: {
+            title: t('yAxisAvgPrice'),
+            domain: [0.5, 1], // 占据上半个图表
+            rangemode: 'tozero',
+            gridcolor: '#e2e8f0'
+        },
+        yaxis2: {
+            title: t('yAxisCount'),
+            domain: [0, 0.5], // 占据下半个图表
+            autorange: 'reversed', // 关键！让下半区的0值贴合中心轴，柱子向下生长
+            rangemode: 'tozero',
+            gridcolor: '#e2e8f0'
+        },
+        showlegend: true,
+        legend: { orientation: 'h', x: 0.5, xanchor: 'center', y: 1.1 }
+    };
+
+    Plotly.newPlot(els.distChartDiv, [tracePrice, traceCount], distLayout, { responsive: true, displayModeBar: false });
 }
 
-els.downloadResultsBtn.onclick = () => saveAs(new Blob([Papa.unparse(State.results.map(r=>({"Size":r.x, "Rate":r.y, "Total":r.x*r.y})))], {type:'text/csv'}), t('fileResults'));
+els.downloadResultsBtn.onclick = () => saveAs(new Blob([Papa.unparse(State.results.map(r=>({"Size":r.x, "Rate":r.y, "Total Price":r.x*r.y})))], {type:'text/csv'}), t('fileResults'));
 els.downloadLookupBtn.onclick = () => {
     const l = []; for(let i=300; i<=800; i++) l.push({"Size":i, "Rate":PCHIP.evaluate(State.lastPchipParams, [i])[0]});
     saveAs(new Blob([Papa.unparse(l)], {type:'text/csv'}), t('fileLookup'));
