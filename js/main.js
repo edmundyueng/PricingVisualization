@@ -31,11 +31,11 @@ const TRANSLATIONS = {
         tabCurve: "价格率曲线 (Rate)",
         tabDist: "总价与库存分布 (Distribution)",
         distChartTitle: "面积区间分布与总价估算",
-        xAxisBin: "土地面积区间 (Size Bin)",
+        xAxisBin: "土地面积区间 (Land Size Bin)",
         yAxisCount: "地块数量 (Lots)",
         yAxisAvgPrice: "平均总价 ($)",
-        seriesLotCount: "地块数量",
-        seriesAvgPrice: "平均总价",
+        seriesLotCount: "Lot Count",
+        seriesAvgPrice: "Average Price",
         minPrice: "最低价",
         maxPrice: "最高价",
         alertNoData: "请先上传土地数据。",
@@ -150,7 +150,7 @@ const State = {
     anchors: [{ size: 375, rate: 690 }, { size: 450, rate: 645 }, { size: 550, rate: 625 }, { size: 600, rate: 620 }],
     lastPchipParams: null,
     results: [],
-    binSize: 50, // 默认 Bin Size
+    binSize: 50,
     isChartGenerated: false
 };
 
@@ -198,15 +198,11 @@ function updateUI() {
 
 els.langToggle.onclick = () => { State.lang = State.lang === 'zh' ? 'en' : 'zh'; updateUI(); };
 
-// 监听 Bin Size 实时修改
 els.binSizeInput.addEventListener('input', (e) => {
     const val = parseInt(e.target.value);
     if (val > 0) {
         State.binSize = val;
-        // 如果图表已经生成过了，输入时实时重新渲染
-        if (State.isChartGenerated) {
-            generateChart();
-        }
+        if (State.isChartGenerated) generateChart();
     }
 });
 
@@ -297,7 +293,9 @@ function generateChart() {
     if (!State.isChartGenerated) return;
     const minX = Math.min(...State.uploadedData), maxX = Math.max(...State.uploadedData);
     
-    // 1. 生成第一张图：PCHIP 价格率曲线
+    // ==========================================
+    // 1. PCHIP 曲线图 (Curve Tab)
+    // ==========================================
     const plotX = []; for(let i=0; i<=200; i++) plotX.push(minX + (maxX-minX)*(i/200));
     const plotY = PCHIP.evaluate(State.lastPchipParams, plotX);
 
@@ -307,13 +305,10 @@ function generateChart() {
         { x: [minX, maxX], y: [State.avgRate, State.avgRate], mode: 'lines', name: t('seriesAvg'), line: { dash: 'dash', color: '#10b981' } }
     ], { title: t('chartTitle'), margin: { t: 40, b: 40, l: 50, r: 20 }, hovermode: 'closest' }, { responsive: true, displayModeBar: false });
 
-    // 2. 生成第二张图：Bin 分布与上下双半轴图 (Diverging Bar Chart)
-    const sizes = State.results.map(r => r.x);
-    
-    // 使用用户在 UI 上的 Bin Size
-    let step = State.binSize;
-    if (!step || step <= 0) step = 50;
-
+    // ==========================================
+    // 2. 双半轴柱状图 + 内部KDE剪影 (Distribution Tab)
+    // ==========================================
+    let step = State.binSize || 50;
     const minBin = Math.floor(minX / step) * step;
     const maxBin = Math.ceil(maxX / step) * step;
 
@@ -323,7 +318,7 @@ function generateChart() {
     }
 
     State.results.forEach(item => {
-        const price = item.x * item.y; // 土地面积 × 价格率 = 估算总价
+        const price = item.x * item.y;
         let bIdx = Math.floor((item.x - minBin) / step);
         if (bIdx >= bins.length) bIdx = bins.length - 1;
         if (bIdx < 0) bIdx = 0;
@@ -331,85 +326,161 @@ function generateChart() {
         bins[bIdx].prices.push(price);
     });
 
-    const xLabels = [], counts = [], avgPrices = [], customDataPrice = [];
+    const xIndices = [], xLabels = [], counts = [], avgPrices = [], customDataPrice = [];
 
-    bins.forEach(b => {
+    bins.forEach((b, i) => {
+        xIndices.push(i); // 使用底层纯数字坐标 0,1,2... 以便后期精准注入白线
         xLabels.push(b.label);
         counts.push(b.count);
         if (b.count > 0) {
             avgPrices.push(b.prices.reduce((a,c)=>a+c, 0) / b.count);
-            customDataPrice.push([Math.min(...b.prices), Math.max(...b.prices)]); // 注入 Min & Max 数据
+            customDataPrice.push([Math.min(...b.prices), Math.max(...b.prices)]);
         } else {
             avgPrices.push(0);
             customDataPrice.push([0, 0]);
         }
     });
 
-    // 顶部正数区：平均总价 (Bar Chart)
+    // 计算内部 KDE 剪影坐标 (Silhouette line)
+    const allKdeX = [];
+    const allKdeY = [];
+
+    bins.forEach((b, i) => {
+        if (b.count === 0) return;
+        
+        let minP = Math.min(...b.prices);
+        let maxP = Math.max(...b.prices);
+        
+        // 如果该区间价格全部一样（或只有一块地），为了绘制出图形，人为制造 5% 的区间偏差
+        if (minP === maxP) {
+            minP = minP * 0.95 || minP - 10;
+            maxP = maxP * 1.05 || maxP + 10;
+        }
+        
+        const bw = (maxP - minP) / 5; // 带宽
+        const numPoints = 30; // 曲线平滑度
+        const pStep = (maxP - minP) / (numPoints - 1);
+        
+        const kdeX = [], kdeY = [];
+        let maxDen = 0;
+        
+        for(let j=0; j<numPoints; j++) {
+            const pt = minP + j * pStep;
+            kdeX.push(pt);
+            let den = 0;
+            for(const p of b.prices) {
+                den += Math.exp(-0.5 * Math.pow((pt - p)/bw, 2));
+            }
+            kdeY.push(den);
+            if (den > maxDen) maxDen = den;
+        }
+
+        const barAvgY = avgPrices[i];
+        
+        // 将价格和密度分布【映射】到当前柱子的 [x] 和 [y] 物理空间中
+        for(let j=0; j<numPoints; j++) {
+            // X轴映射：将最高低价约束在柱子宽度内 (-0.35 到 0.35 之间)
+            const normX = (kdeX[j] - minP) / (maxP - minP);
+            const localX = i - 0.35 + normX * 0.7; 
+            
+            // Y轴映射：将密度曲线的高度限制在平均价柱子的底部到中部 (10% ~ 60% 高度处)
+            const normY = kdeY[j] / (maxDen || 1);
+            const localY = barAvgY * 0.1 + normY * (barAvgY * 0.5); 
+            
+            allKdeX.push(localX);
+            allKdeY.push(localY);
+        }
+        
+        // 断开不同柱子之间的线条
+        allKdeX.push(null);
+        allKdeY.push(null);
+    });
+
+    // Trace 1: 顶部平均总价 (蓝色主柱)
     const tracePrice = {
-        x: xLabels,
+        x: xIndices,
         y: avgPrices,
         type: 'bar',
+        width: 0.8, // 明确设定柱子宽度，与白线映射对应
         name: t('seriesAvgPrice'),
-        marker: { color: '#3b82f6', opacity: 0.9 }, // 蓝色系
+        marker: { color: '#4e8df5', opacity: 1 }, 
         customdata: customDataPrice,
-        // --- Data Label 配置 ---
         text: avgPrices.map(p => p > 0 ? '$' + Math.round(p).toLocaleString() : ''), 
         textposition: 'auto', 
-        textfont: { size: 10 }, 
-        // -----------------------
-        hovertemplate: '<b>Bin: %{x}</b><br>' + 
+        textfont: { size: 11, color: '#ffffff' }, 
+        hovertemplate: '<b>Bin: %{text}</b><br>' +  // hover时显示真实的 Bin Label
                        t('seriesAvgPrice') + ': $%{y:,.0f}<br>' + 
                        t('minPrice') + ': $%{customdata[0]:,.0f}<br>' + 
                        t('maxPrice') + ': $%{customdata[1]:,.0f}<extra></extra>',
         yaxis: 'y'
     };
+    // 强制把底层 x 坐标在 Hover 时转换为肉眼可读的 xLabel
+    tracePrice.text = xLabels; 
+    tracePrice.hovertemplate = tracePrice.hovertemplate.replace('%{text}', '%{customdata[2]}');
+    tracePrice.customdata = customDataPrice.map((d, i) => [d[0], d[1], xLabels[i]]);
 
-    // 底部负数区：地块数量 (Bar Chart 向下悬挂)
+    // Trace 2: 底部地块数量 (黄色悬挂柱)
     const traceCount = {
-        x: xLabels,
+        x: xIndices,
         y: counts,
         type: 'bar',
+        width: 0.8,
         name: t('seriesLotCount'),
-        marker: { color: '#f59e0b', opacity: 0.9 }, // 橙色系
-        // --- Data Label 配置 ---
+        marker: { color: '#f59e0b', opacity: 1 }, 
         text: counts.map(c => c > 0 ? c : ''), 
         textposition: 'auto', 
-        textfont: { size: 11, color: '#78350f' }, 
-        // -----------------------
+        textfont: { size: 12, color: '#451a03' }, 
         yaxis: 'y2',
-        hovertemplate: '<b>Bin: %{x}</b><br>' + 
+        customdata: xLabels,
+        hovertemplate: '<b>Bin: %{customdata}</b><br>' + 
                        t('seriesLotCount') + ': %{y}<extra></extra>'
     };
 
+    // Trace 3: 柱内的白色 KDE 剪影曲线
+    const traceSilhouette = {
+        x: allKdeX,
+        y: allKdeY,
+        type: 'scatter',
+        mode: 'lines',
+        name: 'Density Silhouette',
+        line: { shape: 'spline', color: '#ffffff', width: 3 },
+        hoverinfo: 'skip', // 跳过鼠标悬浮，避免遮挡底部柱子的数据框
+        showlegend: false,
+        yaxis: 'y'
+    };
+
+    // Layout
     const distLayout = {
         title: t('distChartTitle'),
-        margin: { t: 80, r: 40, l: 60, b: 60 }, // 加大顶部 margin 留出图例空间
+        margin: { t: 80, r: 40, l: 60, b: 60 },
         barmode: 'group',
         xaxis: {
             title: t('xAxisBin'),
-            anchor: 'y2', // 将 X轴文字标签固定在最底部
+            tickvals: xIndices,    // 告诉系统在 0, 1, 2 画刻度
+            ticktext: xLabels,     // 刻度上的字替换为 '350-400'
+            anchor: 'y2', 
             tickangle: -45,
-            gridcolor: '#f1f5f9'
+            gridcolor: '#f1f5f9',
+            zeroline: false
         },
         yaxis: {
             title: t('yAxisAvgPrice'),
-            domain: [0.5, 1], // 占据上半个图表
+            domain: [0.5, 1], 
             rangemode: 'tozero',
             gridcolor: '#e2e8f0'
         },
         yaxis2: {
             title: t('yAxisCount'),
-            domain: [0, 0.5], // 占据下半个图表
-            autorange: 'reversed', // 关键！让下半区的0值贴合中心轴，柱子向下生长
+            domain: [0, 0.5], 
+            autorange: 'reversed', 
             rangemode: 'tozero',
             gridcolor: '#e2e8f0'
         },
         showlegend: true,
-        legend: { orientation: 'h', x: 0.5, xanchor: 'center', y: 1.15 } // 微调图例位置，避免重叠
+        legend: { orientation: 'h', x: 0.5, xanchor: 'center', y: 1.15 }
     };
 
-    Plotly.newPlot(els.distChartDiv, [tracePrice, traceCount], distLayout, { responsive: true, displayModeBar: false });
+    Plotly.newPlot(els.distChartDiv, [tracePrice, traceCount, traceSilhouette], distLayout, { responsive: true, displayModeBar: false });
 }
 
 els.downloadResultsBtn.onclick = () => saveAs(new Blob([Papa.unparse(State.results.map(r=>({"Size":r.x, "Rate":r.y, "Total Price":r.x*r.y})))], {type:'text/csv'}), t('fileResults'));
