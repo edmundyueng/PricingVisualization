@@ -353,6 +353,11 @@ function generateChart() {
         name: t('seriesAvgPrice'),
         marker: { color: '#3b82f6', opacity: 0.9 }, // 蓝色系
         customdata: customDataPrice,
+        // --- Data Label 配置 ---
+        text: avgPrices.map(p => p > 0 ? '$' + Math.round(p).toLocaleString() : ''), 
+        textposition: 'auto', 
+        textfont: { size: 10 }, 
+        // -----------------------
         hovertemplate: '<b>Bin: %{x}</b><br>' + 
                        t('seriesAvgPrice') + ': $%{y:,.0f}<br>' + 
                        t('minPrice') + ': $%{customdata[0]:,.0f}<br>' + 
@@ -367,6 +372,11 @@ function generateChart() {
         type: 'bar',
         name: t('seriesLotCount'),
         marker: { color: '#f59e0b', opacity: 0.9 }, // 橙色系
+        // --- Data Label 配置 ---
+        text: counts.map(c => c > 0 ? c : ''), 
+        textposition: 'auto', 
+        textfont: { size: 11, color: '#78350f' }, 
+        // -----------------------
         yaxis: 'y2',
         hovertemplate: '<b>Bin: %{x}</b><br>' + 
                        t('seriesLotCount') + ': %{y}<extra></extra>'
@@ -374,7 +384,7 @@ function generateChart() {
 
     const distLayout = {
         title: t('distChartTitle'),
-        margin: { t: 40, r: 40, l: 60, b: 60 },
+        margin: { t: 80, r: 40, l: 60, b: 60 }, // 加大顶部 margin 留出图例空间
         barmode: 'group',
         xaxis: {
             title: t('xAxisBin'),
@@ -396,7 +406,7 @@ function generateChart() {
             gridcolor: '#e2e8f0'
         },
         showlegend: true,
-        legend: { orientation: 'h', x: 0.5, xanchor: 'center', y: 1.1 }
+        legend: { orientation: 'h', x: 0.5, xanchor: 'center', y: 1.15 } // 微调图例位置，避免重叠
     };
 
     Plotly.newPlot(els.distChartDiv, [tracePrice, traceCount], distLayout, { responsive: true, displayModeBar: false });
