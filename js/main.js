@@ -24,6 +24,7 @@ const TRANSLATIONS = {
         legendAnchor: "锚定点",
         emptyState: "请上传数据并生成图表",
         avgRateTitle: "平均 Price Rate",
+        totalGRTitle: "总货值 (Total GR)",
         resDataCount: "数据点",
         resAnchorCount: "锚定点",
         downloadResults: "下载结果 (CSV)",
@@ -74,6 +75,7 @@ const TRANSLATIONS = {
         legendAnchor: "Anchors",
         emptyState: "Upload data to generate chart",
         avgRateTitle: "Average Price Rate",
+        totalGRTitle: "Total GR",
         resDataCount: "Data Points",
         resAnchorCount: "Anchors",
         downloadResults: "Download (CSV)",
@@ -180,6 +182,7 @@ const els = {
     emptyState: document.getElementById('emptyState'),
     resultsPanel: document.getElementById('resultsPanel'),
     resAvgRate: document.getElementById('resAvgRate'),
+    resTotalGR: document.getElementById('resTotalGR'), // 新增 ID
     resDataCount: document.getElementById('resDataCount'),
     resAnchorCount: document.getElementById('resAnchorCount'),
     downloadResultsBtn: document.getElementById('downloadResultsBtn'),
@@ -278,12 +281,25 @@ els.generateBtn.onclick = () => {
     const sorted = [...State.anchors].sort((a,b) => a.size - b.size);
     State.lastPchipParams = PCHIP.setup(sorted.map(a=>a.size), sorted.map(a=>a.rate));
     const dataY = PCHIP.evaluate(State.lastPchipParams, State.uploadedData);
-    State.results = State.uploadedData.map((x, i) => ({ x, y: dataY[i] }));
+    
+    // 计算结果并统计总货值
+    let totalGR = 0;
+    State.results = State.uploadedData.map((x, i) => {
+        const rate = dataY[i];
+        totalGR += (x * rate); // 公式：land size * price rate
+        return { x, y: rate };
+    });
+    
     State.avgRate = dataY.reduce((a,b)=>a+b,0)/dataY.length;
+    State.totalGR = totalGR;
     State.isChartGenerated = true;
+
+    // 更新底部 UI
     els.resAvgRate.textContent = State.avgRate.toFixed(2);
+    els.resTotalGR.textContent = Math.round(State.totalGR).toLocaleString(); // 格式化总货值
     els.resDataCount.textContent = State.uploadedData.length;
     els.resAnchorCount.textContent = State.anchors.length;
+    
     els.emptyState.classList.add('hidden');
     els.resultsPanel.classList.remove('invisible', 'opacity-0');
     generateChart();
@@ -293,9 +309,7 @@ function generateChart() {
     if (!State.isChartGenerated) return;
     const minX = Math.min(...State.uploadedData), maxX = Math.max(...State.uploadedData);
     
-    // ==========================================
-    // 1. PCHIP 曲线图 (Curve Tab)
-    // ==========================================
+    // 1. PCHIP 曲线图
     const plotX = []; for(let i=0; i<=200; i++) plotX.push(minX + (maxX-minX)*(i/200));
     const plotY = PCHIP.evaluate(State.lastPchipParams, plotX);
 
@@ -305,9 +319,7 @@ function generateChart() {
         { x: [minX, maxX], y: [State.avgRate, State.avgRate], mode: 'lines', name: t('seriesAvg'), line: { dash: 'dash', color: '#10b981' } }
     ], { title: t('chartTitle'), margin: { t: 40, b: 40, l: 50, r: 20 }, hovermode: 'closest' }, { responsive: true, displayModeBar: false });
 
-    // ==========================================
-    // 2. 双半轴柱状图 + 内部KDE剪影 (Distribution Tab)
-    // ==========================================
+    // 2. 双半轴 + KDE 剪影
     let step = State.binSize || 50;
     const minBin = Math.floor(minX / step) * step;
     const maxBin = Math.ceil(maxX / step) * step;
@@ -327,160 +339,71 @@ function generateChart() {
     });
 
     const xIndices = [], xLabels = [], counts = [], avgPrices = [], customDataPrice = [];
+    const allKdeX = [], allKdeY = [];
 
     bins.forEach((b, i) => {
-        xIndices.push(i); // 使用底层纯数字坐标 0,1,2... 以便后期精准注入白线
+        xIndices.push(i);
         xLabels.push(b.label);
         counts.push(b.count);
         if (b.count > 0) {
-            avgPrices.push(b.prices.reduce((a,c)=>a+c, 0) / b.count);
-            customDataPrice.push([Math.min(...b.prices), Math.max(...b.prices)]);
+            const avgP = b.prices.reduce((a,c)=>a+c, 0) / b.count;
+            avgPrices.push(avgP);
+            customDataPrice.push([Math.min(...b.prices), Math.max(...b.prices), b.label]);
+
+            // KDE 计算
+            let minP = Math.min(...b.prices), maxP = Math.max(...b.prices);
+            if (minP === maxP) { minP *= 0.95; maxP *= 1.05; }
+            const bw = (maxP - minP) / 5, numPoints = 30, pStep = (maxP - minP) / (numPoints - 1);
+            let maxDen = 0, tempKde = [];
+            for(let j=0; j<numPoints; j++) {
+                const pt = minP + j * pStep;
+                let den = 0;
+                for(const p of b.prices) den += Math.exp(-0.5 * Math.pow((pt - p)/bw, 2));
+                tempKde.push({pt, den});
+                if (den > maxDen) maxDen = den;
+            }
+            tempKde.forEach(k => {
+                const normX = (k.pt - minP) / (maxP - minP);
+                allKdeX.push(i - 0.35 + normX * 0.7);
+                allKdeY.push(avgP * 0.1 + (k.den / maxDen) * (avgP * 0.5));
+            });
+            allKdeX.push(null); allKdeY.push(null);
         } else {
             avgPrices.push(0);
-            customDataPrice.push([0, 0]);
+            customDataPrice.push([0, 0, b.label]);
         }
     });
 
-    // 计算内部 KDE 剪影坐标 (Silhouette line)
-    const allKdeX = [];
-    const allKdeY = [];
-
-    bins.forEach((b, i) => {
-        if (b.count === 0) return;
-        
-        let minP = Math.min(...b.prices);
-        let maxP = Math.max(...b.prices);
-        
-        // 如果该区间价格全部一样（或只有一块地），为了绘制出图形，人为制造 5% 的区间偏差
-        if (minP === maxP) {
-            minP = minP * 0.95 || minP - 10;
-            maxP = maxP * 1.05 || maxP + 10;
-        }
-        
-        const bw = (maxP - minP) / 5; // 带宽
-        const numPoints = 30; // 曲线平滑度
-        const pStep = (maxP - minP) / (numPoints - 1);
-        
-        const kdeX = [], kdeY = [];
-        let maxDen = 0;
-        
-        for(let j=0; j<numPoints; j++) {
-            const pt = minP + j * pStep;
-            kdeX.push(pt);
-            let den = 0;
-            for(const p of b.prices) {
-                den += Math.exp(-0.5 * Math.pow((pt - p)/bw, 2));
-            }
-            kdeY.push(den);
-            if (den > maxDen) maxDen = den;
-        }
-
-        const barAvgY = avgPrices[i];
-        
-        // 将价格和密度分布【映射】到当前柱子的 [x] 和 [y] 物理空间中
-        for(let j=0; j<numPoints; j++) {
-            // X轴映射：将最高低价约束在柱子宽度内 (-0.35 到 0.35 之间)
-            const normX = (kdeX[j] - minP) / (maxP - minP);
-            const localX = i - 0.35 + normX * 0.7; 
-            
-            // Y轴映射：将密度曲线的高度限制在平均价柱子的底部到中部 (10% ~ 60% 高度处)
-            const normY = kdeY[j] / (maxDen || 1);
-            const localY = barAvgY * 0.1 + normY * (barAvgY * 0.5); 
-            
-            allKdeX.push(localX);
-            allKdeY.push(localY);
-        }
-        
-        // 断开不同柱子之间的线条
-        allKdeX.push(null);
-        allKdeY.push(null);
-    });
-
-    // Trace 1: 顶部平均总价 (蓝色主柱)
     const tracePrice = {
-        x: xIndices,
-        y: avgPrices,
-        type: 'bar',
-        width: 0.8, // 明确设定柱子宽度，与白线映射对应
-        name: t('seriesAvgPrice'),
-        marker: { color: '#4e8df5', opacity: 1 }, 
-        customdata: customDataPrice,
-        text: avgPrices.map(p => p > 0 ? '$' + Math.round(p).toLocaleString() : ''), 
-        textposition: 'auto', 
-        textfont: { size: 11, color: '#ffffff' }, 
-        hovertemplate: '<b>Bin: %{text}</b><br>' +  // hover时显示真实的 Bin Label
-                       t('seriesAvgPrice') + ': $%{y:,.0f}<br>' + 
-                       t('minPrice') + ': $%{customdata[0]:,.0f}<br>' + 
-                       t('maxPrice') + ': $%{customdata[1]:,.0f}<extra></extra>',
+        x: xIndices, y: avgPrices, type: 'bar', width: 0.8, name: t('seriesAvgPrice'),
+        marker: { color: '#4e8df5' }, customdata: customDataPrice,
+        text: avgPrices.map(p => p > 0 ? '$' + Math.round(p).toLocaleString() : ''),
+        textposition: 'auto', textfont: { size: 11, color: '#ffffff' },
+        hovertemplate: '<b>Bin: %{customdata[2]}</b><br>' + t('seriesAvgPrice') + ': $%{y:,.0f}<br>' + t('minPrice') + ': $%{customdata[0]:,.0f}<br>' + t('maxPrice') + ': $%{customdata[1]:,.0f}<extra></extra>',
         yaxis: 'y'
     };
-    // 强制把底层 x 坐标在 Hover 时转换为肉眼可读的 xLabel
-    tracePrice.text = xLabels; 
-    tracePrice.hovertemplate = tracePrice.hovertemplate.replace('%{text}', '%{customdata[2]}');
-    tracePrice.customdata = customDataPrice.map((d, i) => [d[0], d[1], xLabels[i]]);
 
-    // Trace 2: 底部地块数量 (黄色悬挂柱)
     const traceCount = {
-        x: xIndices,
-        y: counts,
-        type: 'bar',
-        width: 0.8,
-        name: t('seriesLotCount'),
-        marker: { color: '#f59e0b', opacity: 1 }, 
-        text: counts.map(c => c > 0 ? c : ''), 
-        textposition: 'auto', 
-        textfont: { size: 12, color: '#451a03' }, 
-        yaxis: 'y2',
-        customdata: xLabels,
-        hovertemplate: '<b>Bin: %{customdata}</b><br>' + 
-                       t('seriesLotCount') + ': %{y}<extra></extra>'
+        x: xIndices, y: counts, type: 'bar', width: 0.8, name: t('seriesLotCount'),
+        marker: { color: '#f59e0b' }, customdata: xLabels,
+        text: counts.map(c => c > 0 ? c : ''),
+        textposition: 'auto', textfont: { size: 12, color: '#451a03' },
+        hovertemplate: '<b>Bin: %{customdata}</b><br>' + t('seriesLotCount') + ': %{y}<extra></extra>',
+        yaxis: 'y2'
     };
 
-    // Trace 3: 柱内的白色 KDE 剪影曲线
     const traceSilhouette = {
-        x: allKdeX,
-        y: allKdeY,
-        type: 'scatter',
-        mode: 'lines',
-        name: 'Density Silhouette',
-        line: { shape: 'spline', color: '#ffffff', width: 3 },
-        hoverinfo: 'skip', // 跳过鼠标悬浮，避免遮挡底部柱子的数据框
-        showlegend: false,
-        yaxis: 'y'
+        x: allKdeX, y: allKdeY, type: 'scatter', mode: 'lines', line: { shape: 'spline', color: '#ffffff', width: 3 },
+        hoverinfo: 'skip', showlegend: false, yaxis: 'y'
     };
 
-    // Layout
-    const distLayout = {
-        title: t('distChartTitle'),
-        margin: { t: 80, r: 40, l: 60, b: 60 },
-        barmode: 'group',
-        xaxis: {
-            title: t('xAxisBin'),
-            tickvals: xIndices,    // 告诉系统在 0, 1, 2 画刻度
-            ticktext: xLabels,     // 刻度上的字替换为 '350-400'
-            anchor: 'y2', 
-            tickangle: -45,
-            gridcolor: '#f1f5f9',
-            zeroline: false
-        },
-        yaxis: {
-            title: t('yAxisAvgPrice'),
-            domain: [0.5, 1], 
-            rangemode: 'tozero',
-            gridcolor: '#e2e8f0'
-        },
-        yaxis2: {
-            title: t('yAxisCount'),
-            domain: [0, 0.5], 
-            autorange: 'reversed', 
-            rangemode: 'tozero',
-            gridcolor: '#e2e8f0'
-        },
-        showlegend: true,
-        legend: { orientation: 'h', x: 0.5, xanchor: 'center', y: 1.15 }
-    };
-
-    Plotly.newPlot(els.distChartDiv, [tracePrice, traceCount, traceSilhouette], distLayout, { responsive: true, displayModeBar: false });
+    Plotly.newPlot(els.distChartDiv, [tracePrice, traceCount, traceSilhouette], {
+        title: t('distChartTitle'), margin: { t: 80, r: 40, l: 60, b: 60 }, barmode: 'group',
+        xaxis: { title: t('xAxisBin'), tickvals: xIndices, ticktext: xLabels, anchor: 'y2', tickangle: -45, gridcolor: '#f1f5f9', zeroline: false },
+        yaxis: { title: t('yAxisAvgPrice'), domain: [0.5, 1], rangemode: 'tozero', gridcolor: '#e2e8f0' },
+        yaxis2: { title: t('yAxisCount'), domain: [0, 0.5], autorange: 'reversed', rangemode: 'tozero', gridcolor: '#e2e8f0' },
+        showlegend: true, legend: { orientation: 'h', x: 0.5, xanchor: 'center', y: 1.15 }
+    }, { responsive: true, displayModeBar: false });
 }
 
 els.downloadResultsBtn.onclick = () => saveAs(new Blob([Papa.unparse(State.results.map(r=>({"Size":r.x, "Rate":r.y, "Total Price":r.x*r.y})))], {type:'text/csv'}), t('fileResults'));
